@@ -1,0 +1,6 @@
+Revision history for Perl extension POE::Wheel::Sendfile.
+
+0.01  Wed Dec 15 17:16:58 2010
+	- original version; created by h2xs 1.23 with options
+		-AX POE::Wheel::Sendfile
+
