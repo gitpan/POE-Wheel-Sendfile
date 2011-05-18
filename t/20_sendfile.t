@@ -105,7 +105,7 @@ sub next
         $poe_kernel->yield( 'done' );
         return;
     }
-    diag( $self->{step} );
+    # diag( $self->{step} );
     $poe_kernel->yield( $self->{step} );
 }
 
@@ -124,7 +124,7 @@ sub response
 sub done
 {
     my( $self ) = $_[OBJECT];
-    diag( "done" );
+    # diag( "done" );
     $self->{wheel}->put( { done=> 1 } );
     $self->{wheel}->flush;
     delete $self->{wheel};
@@ -177,13 +177,14 @@ sub step2_resp
 sub step3
 {
     my( $self ) = $_[OBJECT];
+    $DB::single = 1;
     $self->{wheel}->put( { file => $0, size=>1024 } );
 }
 
 sub step3_resp
 {
     my( $self, $data ) = @_[OBJECT,ARG0];
-    is( $data, substr( $self->{slurped}, 0, 1024 ), "Received only 1k" );
+    ok( $data eq substr( $self->{slurped}, 0, 1024 ), "Received only 1k" );
 
     $poe_kernel->yield( 'next' );
 }
@@ -199,7 +200,7 @@ sub step4
 sub step4_resp
 {
     my( $self, $data ) = @_[OBJECT,ARG0];
-    is( $data, substr( $self->{slurped}, 1024, 1024 ), "Received only 1k, offset by 1k" );
+    ok( $data eq substr( $self->{slurped}, 1024, 1024 ), "Received only 1k, offset by 1k" );
 
     $poe_kernel->yield( 'next' );
 }
@@ -280,7 +281,7 @@ sub req
     }
 
     $self->{pending}++;
-    $self->{wheel}->sendfile( $req );
+    $self->{wheel}->sendfile( $req ) or die $@;
 }
 
 sub flushed

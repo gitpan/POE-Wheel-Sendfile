@@ -3,7 +3,7 @@ package POE::Wheel::Sendfile;
 use strict;
 use warnings;
 
-our $VERSION = '0.0100';
+our $VERSION = '0.0200';
 
 use POE;
 use IO::File;
@@ -20,9 +20,11 @@ BEGIN {
     *EVENT_FLUSHED = \&POE::Wheel::ReadWrite::EVENT_FLUSHED;
     *EVENT_ERROR = \&POE::Wheel::ReadWrite::EVENT_ERROR;
     *UNIQUE_ID = \&POE::Wheel::ReadWrite::UNIQUE_ID;
+    *DRIVER_BOTH = \&POE::Wheel::ReadWrite::DRIVER_BOTH;
+    *AUTOFLUSH = \&POE::Wheel::ReadWrite::AUTOFLUSH;
 }
 
-sub STATE_SENDFILE () { 18 }
+sub STATE_SENDFILE () { AUTOFLUSH+1 }
 
 #######################################
 our $HAVE_SENDFILE;
@@ -30,8 +32,8 @@ BEGIN {
     unless( defined $HAVE_SENDFILE ) {
         $HAVE_SENDFILE = 0;
         eval "use Sys::Sendfile 0.11 ();";
-        warn $@ if $@;
         $HAVE_SENDFILE = 1 unless $@;
+        warn $@ if DEBUG and $@;
     }   
 }
 
@@ -45,7 +47,8 @@ sub sendfile
     # Build a select write handler
     $self->_sendfile_define_write( $S ) or return;
     # Call that handler
-    return $poe_kernel->yield( 
+    return $poe_kernel->call(
+                       $poe_kernel->get_active_session,
                        $self->[STATE_SENDFILE], 
                        $self->[HANDLE_OUTPUT]
                      );
@@ -76,6 +79,7 @@ sub _sendfile_setup
             );
             return;
         }
+        $S->{file} = $fh;
         $S->{fh} = $io;
     }
     else {
@@ -116,15 +120,17 @@ sub _sendfile_define_write
             \$self->[STATE_WRITE],      # $state_write
             \$self->[STATE_SENDFILE],   # $state_sendfile
             $self->[UNIQUE_ID],         # $unique_id
+            $self->[DRIVER_BOTH],       # $driver
             \$S,                        # $sendfile
             1                           # $first
         );
+
     my $state;
     if( $HAVE_SENDFILE ) {
         $state = _mk_sendfile( \@need );
     }
     else {
-        $state = _mk_fallback( $self, \@need );
+        $state = _mk_fallback( \@need );
     }
     die unless $state;
     $self->[STATE_SENDFILE] = ref( $self ) . " ($self->[UNIQUE_ID]) -> sendfile write",
@@ -149,6 +155,7 @@ sub _mk_sendfile
         $state_write,                   # \$self->[STATE_WRITE];
         $state_sendfile,                # \$self->[STATE_SENDFILE];
         $unique_id,                     # $self->[UNIQUE_ID];
+        $driver,                        # $self->[DRIVER_BOTH];
         $sendfile,                      # \$S;
         $first                          # 1;
     ) = @{ $_[0] };
@@ -214,14 +221,25 @@ sub _mk_fallback
         $first                          # 1;
     ) = @{ $_[0] };
 
+    my $rv = sysseek( $$sendfile->{fh}, $$sendfile->{offset}, 0 );
+    unless( defined $rv ) {
+        $@ = "Unable to sysseek to $$sendfile->{offset}: $!";
+        return;
+    }
+
     my $buffer = '';
     return sub {
         0 && CRIMSON_SCOPE_HACK('<');
 
         my ($k, $me, $handle) = @_[KERNEL, SESSION, ARG0];
 
-        # TODO - make sure sysread is reading from {offset}
-        my $rv = sysread( $$sendfile->{fh}, $buffer, $$sendfile->{blocksize} );
+        # Don't read to much if we only want a little
+        my $size = $$sendfile->{blocksize};
+        if( $size+$$sendfile->{offset} > $$sendfile->{size} ) {
+            $size = $$sendfile->{size} - $$sendfile->{offset};
+        }
+
+        my $rv = sysread( $$sendfile->{fh}, $buffer, $size );
         unless( defined $rv ) {
             $$event_error && $k->call(
                   $me, $$event_error, 'sysread', ($!+0), $!, $unique_id
@@ -230,30 +248,36 @@ sub _mk_fallback
         }    
 
         $$sendfile->{offset} += $rv;
-        if( $rv ==0 || $$sendfile->{offset} >= $$sendfile->{size} ) {
+        if( $rv == 0 || $$sendfile->{offset} >= $$sendfile->{size} ) {
             # Nothing more to send
             $$sendfile = undef();
-            # We want the last flush to do to the session
+            # We want the last flush to go to the session
+            $k->select_write( $handle );
             $k->select_write( $handle, $$state_write );
             # Remove this state
             $k->state( $$state_sendfile );
-            return 1;
+            # Nothing more to send
+            $$state_sendfile = undef();
         }
-        
-        if( $driver->put( $buffer ) ) {
-            $driver->flush;
-            if( $! ) {
-                $$event_error && $k->call(
-                      $me, $$event_error, 'syswrite', ($!+0), $!, $unique_id
-                );
-                return;
+    
+        my $err = 0;    
+        if( $rv != 0 ) {
+            if( $driver->put( [$buffer] ) ) {
+                $driver->flush( $handle );
+                if( $! ) {
+                    $$event_error && $k->call(
+                          $me, $$event_error, 'syswrite', ($!+0), $!, $unique_id
+                    );
+                    $err = 1;
+                }
             }
-            if( $first ) {
+            if( $first and not $err ) {
                 # Turn the select on 
                 $k->select_resume_write( $handle );
                 $first = 0;
             }
         }
+        return if $err;
         return 1;
     };
 }
@@ -287,7 +311,7 @@ POE::Wheel::Sendfile - Extend POE::Wheel::ReadWrite with sendfile
 
 =head1 DESCRIPTION
 
-POE::Wheel::Sendfile extends L<POE::Wheel::Sendfile> and adds the
+POE::Wheel::Sendfile extends L<POE::Wheel::ReadWrite> and adds the
 possibility of using the sendfile system call to transfer data as
 efficiently.
 
@@ -313,7 +337,7 @@ POE::Wheel::Sendfile only adds one public method to the interface:
 
 Sends C<$FILE> over the wheel's socket.  Optionnaly starting at C<$OFFSET>. 
 If L<Sys::Sendfile> is not available, will fall back to sending the file in
-C<$BLKSIZE> chunks.
+C<$BLKSIZE> chunks with L<sysread>.
 
 
 =head3 file => $FILE
@@ -346,7 +370,7 @@ Philip Gwyn, E<lt>gwyn -at- cpan.orgE<gt>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2010 by Philip Gwyn
+Copyright (C) 2010, 2011 by Philip Gwyn
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.8 or,

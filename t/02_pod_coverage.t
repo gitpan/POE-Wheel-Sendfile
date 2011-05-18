@@ -13,7 +13,7 @@ pod_coverage_ok(
         "POE::Wheel::Sendfile",
         { also_private => [ qw( EVENT_ERROR EVENT_FLUSHED STATE_SENDFILE 
                                 HANDLE_OUTPUT SENDFILE STATE_WRITE UNIQUE_ID
-                                DEBUG ) ], 
+                                DEBUG AUTOFLUSH DRIVER_BOTH) ], 
         },
         "POE::Wheel::Sendfile, ignoring private functions",
 );

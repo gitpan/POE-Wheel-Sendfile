@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               POE-Wheel-Sendfile
-version:            0.0100
+version:            0.0200
 abstract:           Extend POE::Wheel::ReadWrite with sendfile
 author:
     - Philip Gwyn <fil@localdomain>
